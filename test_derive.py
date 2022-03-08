@@ -8,8 +8,9 @@ import pdb
 
 
 class net(torch.nn.Module):
-    def __init__(self, widths, poly_order):
+    def __init__(self, widths, poly_order, model_order):
         super().__init__()
+        self.model_order = model_order
         self.poly_order = poly_order
         self.widths = widths
         self.we = []
@@ -45,9 +46,9 @@ class net(torch.nn.Module):
             x = self.ad[i](x)
         return x
 
-    def build_sindy(self, z):
+    def build_sindy(self, z, output_dim):
         self.theta = sindy_library(z, self.poly_order)
-        self.E = nn.Linear(len(self.theta), z.shape[0])
+        self.E = nn.Linear(len(self.theta), output_dim)
         return self.theta, self.E
 
     def forward(self, x, dx, ddx):
@@ -55,17 +56,29 @@ class net(torch.nn.Module):
         # z = torch.sigmoid(torch.matmul(x, W))
 
         z = self.encoder(x)
-        dz = self.calc_dz(x, dx, 1)
 
-        theta, E = self.build_sindy(z)
-        dzb = E(theta)
+        if model_order == 1:
+            dz = self.calc_dz(x, dx, 1)
+            theta, E = self.build_sindy(z, z.shape[0])
+            dzb = E(theta)
 
-        yb = self.decoder(z)
-        dyb = self.calc_dz(z, dzb, 0)
+            yb = self.decoder(z)
+            dyb = self.calc_dz(z, dzb, 0)
 
-        pdb.set_trace()
+            return z, dz, dzb, yb, dyb
 
-        return x
+        else:
+            dz, ddz = self.calc_ddz(x, dx, ddx, 1)
+            theta, E = self.build_sindy(torch.cat((z, dz)), z.shape[0])
+            ddzb = E(theta)
+
+            yb = self.decoder(z)
+
+            pdb.set_trace()
+
+            dyb, ddyb = self.calc_ddz(z, dz, ddzb, 0)
+
+            return z, dz, ddzb, yb, dyb, ddyb
 
     def calc_gx_enc(self, x):
         gx = torch.autograd.functional.jacobian(self.encoder, x, create_graph=True)
@@ -97,7 +110,11 @@ class net(torch.nn.Module):
         else:
             gx = self.calc_gx_dec(x)
             ggx = self.calc_ggx_dec(x)
-        return torch.matmul(gx, ddx) + torch.matmul(ggx, dx)
+
+        dz = torch.matmul(gx, dx)
+        ddz = torch.matmul(gx, ddx) + torch.matmul(ggx, dx)
+
+        return dz, ddz
 
 
 def sindy_library(z, poly_order):
@@ -133,19 +150,20 @@ ddx = torch.rand(64)
 
 widths = [64, 32, 16, 8]
 poly_order = 3
+model_order = 1
 
-mynet = net(widths, poly_order)
+mynet = net(widths, poly_order, model_order)
 mynet.build_encoder()
 mynet.build_decoder()
 
 z = mynet(x, dx, ddx)
-gx = mynet.calc_gx_enc(x)
-ggx = mynet.calc_ggx_enc(x)
-dz = mynet.calc_dz(x, dx, 1)
-ddz = mynet.calc_ddz(x, dx, ddx, 1)
-
-library = sindy_library(z, 1)
-
-mynet.build_sindy(z)
 
 pdb.set_trace()
+# gx = mynet.calc_gx_enc(x)
+# ggx = mynet.calc_ggx_enc(x)
+# dz = mynet.calc_dz(x, dx, 1)
+# ddz = mynet.calc_ddz(x, dx, ddx, 1)
+
+# library = sindy_library(z, 1)
+#
+# mynet.build_sindy(z)
