@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-
+import numpy as np
 from torchvision import datasets
 from torchvision import transforms
 import matplotlib.pyplot as plt
@@ -8,30 +8,43 @@ import pdb
 
 
 class net(torch.nn.Module):
-    def __init__(self, widths, poly_order, model_order):
+    def __init__(self, widths, poly_order, model_order, input_dim, latent_dim, sindy_dim):
         super().__init__()
         self.model_order = model_order
         self.poly_order = poly_order
         self.widths = widths
+        self.input_dim = input_dim
+        self.latent_dim = latent_dim
+        self.sindy_dim = sindy_dim
         self.we = []
         self.ae = []
         self.wd = []
         self.ad = []
         self.E = []
-        self.theta = []
 
     def build_encoder(self):
         for i in range(len(self.widths[:-1])):
             self.we.append(nn.Linear(self.widths[i], self.widths[i+1]))
-            nn.init.xavier_uniform_(self.we[i].weight, gain=nn.init.calculate_gain('relu'))
-            self.ae.append(nn.ReLU())
+            nn.init.xavier_uniform_(self.we[i].weight, gain=nn.init.calculate_gain('sigmoid'))
+            if i < len(self.widths[:-1]) - 1:
+                self.ae.append(nn.Sigmoid())
+            else:
+                self.ae.append(nn.Identity())
         return
 
     def build_decoder(self):
         for i in range(len(self.widths[:-1])):
             self.wd.append(nn.Linear(self.widths[-i-1], self.widths[-i-2]))
-            nn.init.xavier_uniform_(self.we[i].weight, gain=nn.init.calculate_gain('relu'))
-            self.ad.append(nn.ReLU())
+            nn.init.xavier_uniform_(self.we[i].weight, gain=nn.init.calculate_gain('sigmoid'))
+            if i < len(self.widths[:-1]) - 1:
+                self.ad.append(nn.Sigmoid())
+            else:
+                self.ad.append(nn.Identity())
+        return
+
+    def build_sindy(self):
+        self.E = nn.Linear(self.sindy_dim, self.latent_dim)
+        nn.init.ones_(self.E.weight)
         return
 
     def encoder(self, x):
@@ -46,39 +59,34 @@ class net(torch.nn.Module):
             x = self.ad[i](x)
         return x
 
-    def build_sindy(self, z, output_dim):
-        self.theta = sindy_library(z, self.poly_order)
-        self.E = nn.Linear(len(self.theta), output_dim)
-        return self.theta, self.E
-
     def forward(self, x, dx, ddx):
         # W = torch.rand(4, 10)
         # z = torch.sigmoid(torch.matmul(x, W))
 
         z = self.encoder(x)
 
-        if model_order == 1:
+        if self.model_order == 1:
             dz = self.calc_dz(x, dx, 1)
-            theta, E = self.build_sindy(z, z.shape[0])
-            dzb = E(theta)
+            theta = sindy_library(z, self.poly_order)
+            dzb = self.E(theta)
 
-            yb = self.decoder(z)
-            dyb = self.calc_dz(z, dzb, 0)
+            xb = self.decoder(z)
+            dxb = self.calc_dz(z, dzb, 0)
 
-            return z, dz, dzb, yb, dyb
+            return z, dz, dzb, xb, dxb
 
         else:
             dz, ddz = self.calc_ddz(x, dx, ddx, 1)
-            theta, E = self.build_sindy(torch.cat((z, dz)), z.shape[0])
-            ddzb = E(theta)
+            theta = sindy_library(torch.cat((z, dz)), self.poly_order)
+            ddzb = self.E(theta)
 
-            yb = self.decoder(z)
+            xb = self.decoder(z)
 
             pdb.set_trace()
 
-            dyb, ddyb = self.calc_ddz(z, dz, ddzb, 0)
+            dxb, ddxb = self.calc_ddz(z, dz, ddzb, 0)
 
-            return z, dz, ddzb, yb, dyb, ddyb
+            return z, dz, ddzb, xb, dxb, ddxb
 
     def calc_gx_enc(self, x):
         gx = torch.autograd.functional.jacobian(self.encoder, x, create_graph=True)
@@ -140,25 +148,89 @@ def sindy_library(z, poly_order):
                 for k in range(j, latent_dim):
                     library.append(z[i] * z[j] * z[k])
 
+    if poly_order > 3:
+        for i in range(latent_dim):
+            for j in range(i, latent_dim):
+                for k in range(j, latent_dim):
+                    for p in range(k, latent_dim):
+                        library.append(z[i] * z[j] * z[k] * z[p])
+
+    if poly_order > 4:
+        for i in range(latent_dim):
+            for j in range(i, latent_dim):
+                for k in range(j, latent_dim):
+                    for p in range(k, latent_dim):
+                        for q in range(p, latent_dim):
+                            library.append(z[i]*z[j]*z[k]*z[p]*z[q])
+
     return torch.FloatTensor(library)
 
 
-W = torch.rand(4, 10)
-x = torch.rand(64)
-dx = torch.rand(64)
-ddx = torch.rand(64)
+t = torch.arange(0, 3, 0.01)
 
-widths = [64, 32, 16, 8]
+x = torch.sin(t)
+x = torch.stack((x, x))
+
+dx = torch.cos(t)
+dx = torch.stack((dx, dx))
+
+# W = torch.rand(4, 10)
+# x = torch.rand(64)
+# dx = torch.rand(64)
+# ddx = torch.rand(64)
+
+input_dim = 2
+latent_dim = 8
+widths = [2, 32, 16, 8]
 poly_order = 3
 model_order = 1
 
-mynet = net(widths, poly_order, model_order)
+temp = sindy_library(torch.ones(latent_dim), poly_order)
+sindy_dim = temp.shape[0]
+
+# Build network
+
+mynet = net(widths, poly_order, model_order, input_dim, latent_dim, sindy_dim)
 mynet.build_encoder()
 mynet.build_decoder()
+mynet.build_sindy()
 
-z = mynet(x, dx, ddx)
+epochs = 100
+losses = []
 
-pdb.set_trace()
+loss_function = nn.MSELoss()
+
+optimizer = torch.optim.Adam(mynet.parameters(),
+                             lr = 1e-5,
+                             weight_decay = 1e-8)
+
+for e in range(epochs):
+    for i in range(len(t)):
+
+        print(i)
+
+        z, dz, dzb, xb, dxb = mynet(x[:, i], dx[:, i], 0)
+
+        loss = loss_function(xb, x[:, i])
+        loss += loss_function(dz, dzb)
+        loss += loss_function(dx[:, i], dxb)
+        loss += torch.linalg.norm(mynet.E.weight, ord=1)
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        with torch.no_grad():
+            mask = mynet.E.weight > 0.1
+            mynet.E.weight *= mask
+
+    losses.append(loss.detach().numpy())
+
+plt.plot(losses)
+plt.show()
+
+
+
 # gx = mynet.calc_gx_enc(x)
 # ggx = mynet.calc_ggx_enc(x)
 # dz = mynet.calc_dz(x, dx, 1)
