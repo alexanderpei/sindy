@@ -67,4 +67,4 @@ def get_data_batch(batch_size, use_gpu):
     x = torch.Tensor(x)
     dx = torch.Tensor(dx)
 
-    return x, dx
+    return x, dx, t

@@ -50,13 +50,11 @@ class Net(torch.nn.Module):
     def encoder_forward(self, x):
         for layer in self.encoder:
             x = layer(x)
-
         return x
 
     def decoder_forward(self, x):
         for layer in self.decoder:
             x = layer(x)
-
         return x
 
     def forward(self, x, dx, ddx):
@@ -86,12 +84,10 @@ class Net(torch.nn.Module):
 
     def calc_gx_enc(self, x):
         gx = torch.autograd.functional.jacobian(self.encoder_forward, x, create_graph=True)
-
         # Gradient within sample
         gx_ = torch.diagonal(gx, dim1=0, dim2=2)
         # Average across samples
         gx_ = torch.mean(gx_, dim=2)
-
         return gx_
 
     def calc_ggx_enc(self, x):
@@ -105,7 +101,6 @@ class Net(torch.nn.Module):
         gx_ = torch.diagonal(gx, dim1=0, dim2=2)
         # Average across samples
         gx_ = torch.mean(gx_, dim=2)
-
         return gx_
 
     def calc_ggx_dec(self, x):
@@ -118,7 +113,6 @@ class Net(torch.nn.Module):
             gx = self.calc_gx_enc(x)
         else:
             gx = self.calc_gx_dec(x)
-
         return torch.matmul(dx, gx.T)
 
     def calc_ddz(self, x, dx, ddx, is_encoder):
@@ -128,39 +122,72 @@ class Net(torch.nn.Module):
         else:
             gx = self.calc_gx_dec(x)
             ggx = self.calc_ggx_dec(x)
-
         dz = torch.matmul(dx, gx.T)
         ddz = torch.matmul(ddx, gx.T) + torch.matmul(dx, ggx.T)
-
         return dz, ddz
 
 
-def sindy_library(z, poly_order, latent_dim, N):
+def sindy_library(z, poly_order, latent_dim, is_torch=1):
 
+    N = z.shape[0]
     library = []
 
     # Constant
     for i in range(latent_dim):
-        library.append(torch.ones(N, device=z.device))
+        if is_torch:
+            library.append(torch.ones(N, device=z.device))
+        else:
+            library.append(1)
 
     # 1st order
     if poly_order > 0:
         for i in range(latent_dim):
-            library.append(z[:, i])
+            if is_torch:
+                library.append(z[:, i])
+            else:
+                library.append(z[i])
 
     # 2nd order
     if poly_order > 1:
         for i in range(latent_dim):
             for j in range(i, latent_dim):
-                library.append(z[:, i]*z[:,j])
+                if is_torch:
+                    library.append(z[:, i]*z[:,j])
+                else:
+                    library.append(z[i]*z[j])
 
-    # #rd order
+
+    # 3rd order
     if poly_order > 2:
         for i in range(latent_dim):
             for j in range(i, latent_dim):
                 for k in range(j, latent_dim):
-                    library.append(z[:, i]*z[:, j]*z[:, k])
+                    if is_torch:
+                        library.append(z[:, i] * z[:, j] * z[:, k])
+                    else:
+                        library.append(z[i] * z[j] * z[k])
 
-    return torch.stack(library, axis=1)
+    # 4th order
+    if poly_order > 3:
+        for i in range(latent_dim):
+            for j in range(i, latent_dim):
+                for k in range(j, latent_dim):
+                    for p in range(k, latent_dim):
+                        if is_torch:
+                            library.append(z[:, i] * z[:, j] * z[:, k] * z[:, p])
+                        else:
+                            library.append(z[i] * z[j] * z[k] * z[p])
+
+    if is_torch:
+        return torch.stack(library, axis=1)
+    else:
+        return np.stack(library)
 
 
+def sindy_simulate(z, t, poly_order, latent_dim, N, E):
+
+    theta = sindy_library(z, poly_order, latent_dim, N, 0)
+    E = E.weight.detach().numpy()
+    dz = np.matmul(theta, E.T)
+
+    return dz
